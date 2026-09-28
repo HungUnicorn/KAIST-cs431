@@ -45,7 +45,21 @@ impl<T: Ord> Cursor<'_, T> {
     /// Moves the cursor to the position of key in the sorted list.
     /// Returns whether the value was found.
     fn find(&mut self, key: &T) -> bool {
-        todo!()
+        loop {
+            let curr_ptr = *self.0;
+            if curr_ptr.is_null() {
+                return false;
+            }
+            let curr_node = unsafe { &*curr_ptr };
+            match curr_node.data.cmp(key) {
+                Equal => return true,
+                Greater => return false,
+                Less => {
+                    let next_guard = curr_node.next.lock().unwrap();
+                    self.0 = next_guard;
+                }
+            }
+        }
     }
 }
 
@@ -60,7 +74,10 @@ impl<T> FineGrainedListSet<T> {
 
 impl<T: Ord> FineGrainedListSet<T> {
     fn find(&self, key: &T) -> (bool, Cursor<'_, T>) {
-        todo!()
+        let head_guard = self.head.lock().unwrap();
+        let mut cursor = Cursor(head_guard);
+        let found = cursor.find(key);
+        (found, cursor)
     }
 }
 
@@ -70,11 +87,34 @@ impl<T: Ord> ConcurrentSet<T> for FineGrainedListSet<T> {
     }
 
     fn insert(&self, key: T) -> bool {
-        todo!()
+        let (found, mut cursor) = self.find(&key);
+
+        if found {
+            false
+        } else {
+            let new_node = Node::new(key, *cursor.0);
+            *cursor.0 = new_node;
+            true
+        }
     }
 
     fn remove(&self, key: &T) -> bool {
-        todo!()
+        let (found, mut cursor) = self.find(key);
+        if !found {
+            false
+        } else {
+            let curr_ptr = *cursor.0;
+            let curr_guard = unsafe { (*curr_ptr).next.lock().unwrap() };
+
+            *cursor.0 = *curr_guard;
+
+            drop(curr_guard);
+            unsafe {
+                drop(Box::from_raw(curr_ptr));
+            }
+
+            true
+        }
     }
 }
 
@@ -96,13 +136,26 @@ impl<'l, T> Iterator for Iter<'l, T> {
     type Item = &'l T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        let curr_ptr = *self.cursor;
+        if curr_ptr.is_null() {
+            None
+        } else {
+            let curr_node = unsafe { &*curr_ptr };
+            let next_guard = curr_node.next.lock().unwrap();
+            self.cursor = next_guard;
+            Some(&curr_node.data)
+        }
     }
 }
 
 impl<T> Drop for FineGrainedListSet<T> {
     fn drop(&mut self) {
-        todo!()
+        let mut curr = *self.head.get_mut().unwrap();
+        while !curr.is_null() {
+            let next = *unsafe { (*curr).next.get_mut().unwrap() };
+            unsafe { drop(Box::from_raw(curr)) };
+            curr = next;
+        }
     }
 }
 
