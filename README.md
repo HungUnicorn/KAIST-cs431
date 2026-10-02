@@ -9,19 +9,18 @@ Based on the curriculum of [KAIST CS431 (Concurrent Programming)](https://github
 | **1** | Foundations of Concurrency | Multithreading review, race conditions; Parallel TCP Web Server (`homework/src/hello_server/tcp.rs`) |
 | **2** | Systems Rust & Unsafe Memory | Safe vs. unsafe Rust, memory layout, raw pointers; Doubly Linked List (`homework/src/linked_list.rs`) |
 | **3** | Lock-Based Concurrency (API) | Mutual exclusion & synchronization; Concurrent Cache & Thread Pool (`homework/src/hello_server/cache.rs`, `thread_pool.rs`) |
-| **4** | Lock Implementation 1 | SpinLock, TicketLock, MCS & CLH queue locks (`src/lock/{spinlock,ticketlock,mcslock,clhlock,mcsparkinglock}.rs`, `tests/lock/`) |
-| **5** | Lock Implementation 2 | Optimistic synchronization: SeqLock, validation & memory fences (`src/lock/seqlock.rs`) |
-| **6** | Lock-Based Applications | Hand-over-hand lock coupling, fine-grained concurrent linked lists (`homework/src/list_set`) |
-| **7** | Behavior-Oriented Concurrency (API) | Cowns, asynchronous message passing, `when!` clause (`homework/src/boc.rs`) |
-| **8** | Midterm Milestone | Consolidation & review of lock-based concurrency and actor systems |
-| **9** | Lock-Free Concurrency (Concepts) | Hardware memory models, atomic orderings (`SeqCst`, `AcqRel`, `Relaxed`), Atomic Ref Counting (`homework/src/arc.rs`) |
-| **10** | Lock-Free Data Structures 1 | Treiber Stack & Michael-Scott Queue (`src/lockfree/{stack,queue}.rs`); Elimination Backoff Stack (`homework/src/elim_stack`) |
-| **11** | Lock-Free Data Structures 2 | Harris lock-free linked list & marked pointers (`src/lockfree/list.rs`); logical vs. physical deletion |
-| **12** | Lock-Free Data Structures 3 | Lock-free extensible hash table (Split-Ordered List), concurrent growable array (`homework/src/hash_table`) |
-| **13** | Concurrency Specification | Correctness criteria, Linearizability, identifying linearization points |
-| **14** | Safe Memory Reclamation (SMR) | Hazard Pointers (`homework/src/hazard_pointer`), Epoch-Based Reclamation (EBR), solving ABA problem |
-| **15** | Behavior-Oriented Concurrency (Engine) | Multi-core scheduler implementation for message-passing systems |
-| **16** | Final Synthesis | Full test suite execution and dynamic analysis with ThreadSanitizer & AddressSanitizer |
+| **4** | Lock Implementation | SpinLock, TicketLock, MCS & CLH queue locks (`src/lock/{spinlock,ticketlock,mcslock,clhlock,mcsparkinglock}.rs`, `tests/lock/`) |
+| **5** | Lock-Based Applications | Hand-over-hand lock coupling, fine-grained concurrent linked lists (`homework/src/list_set`) |
+| **6** | Behavior-Oriented Concurrency (API) | Cowns, asynchronous message passing, `when!` clause (`homework/src/boc.rs`) |
+| **7** | Optimistic Synchronization | SeqLock, validation & memory fences (`src/lock/seqlock.rs`) |
+| **8** | Lock-Free Concurrency (Concepts) | Hardware memory models, atomic orderings (`SeqCst`, `AcqRel`, `Relaxed`), Atomic Ref Counting (`homework/src/arc.rs`) |
+| **9** | Lock-Free Data Structures 1 | Treiber Stack & Michael-Scott Queue (`src/lockfree/{stack,queue}.rs`); Elimination Backoff Stack (`homework/src/elim_stack`) |
+| **10** | Lock-Free Data Structures 2 | Harris lock-free linked list & marked pointers (`src/lockfree/list.rs`); logical vs. physical deletion |
+| **11** | Lock-Free Data Structures 3 | Lock-free extensible hash table (Split-Ordered List), concurrent growable array (`homework/src/hash_table`) |
+| **12** | Concurrency Specification | Correctness criteria, Linearizability, identifying linearization points |
+| **13** | Safe Memory Reclamation (SMR) | Hazard Pointers (`homework/src/hazard_pointer`), Epoch-Based Reclamation (EBR), solving ABA problem |
+| **14** | Behavior-Oriented Concurrency (Engine) | Multi-core scheduler implementation for message-passing systems |
+| **15** | Final Synthesis | Full test suite execution and dynamic analysis with ThreadSanitizer & AddressSanitizer |
 
 ## Build & Test
 
