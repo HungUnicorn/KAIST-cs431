@@ -56,7 +56,20 @@ impl Request {
     /// `behavior` must be a valid raw pointer to the behavior for `self`, and this should be the
     /// only enqueueing of this request and behavior.
     unsafe fn start_enqueue(&self, behavior: *const Behavior) {
-        todo!()
+        let prev = self
+            .target
+            .last()
+            .swap(self as *const _ as *mut Request, SeqCst);
+        if prev.is_null() {
+            unsafe { Behavior::resolve_dependency(behavior) };
+        } else {
+            unsafe {
+                while !(*prev).scheduled.load(SeqCst) {
+                    core::hint::spin_loop();
+                }
+                (*prev).next.store(behavior as *mut Behavior, SeqCst);
+            }
+        }
     }
 
     /// Finish the second phase of the 2PL enqueue operation.
@@ -67,7 +80,7 @@ impl Request {
     ///
     /// All enqueues for smaller requests on this cown must have been completed.
     unsafe fn finish_enqueue(&self) {
-        todo!()
+        self.scheduled.store(true, SeqCst);
     }
 
     /// Release the cown to the next behavior.
@@ -79,7 +92,29 @@ impl Request {
     ///
     /// `self` must have been actually completed.
     unsafe fn release(&self) {
-        todo!()
+        let mut next = self.next.load(SeqCst);
+        if next.is_null() {
+            if self
+                .target
+                .last()
+                .compare_exchange(
+                    self as *const _ as *mut Request,
+                    ptr::null_mut(),
+                    SeqCst,
+                    SeqCst,
+                )
+                .is_ok()
+            {
+                return;
+            }
+
+            while next.is_null() {
+                core::hint::spin_loop();
+                next = self.next.load(SeqCst);
+            }
+        }
+
+        unsafe { Behavior::resolve_dependency(next) };
     }
 }
 
@@ -164,8 +199,8 @@ type BehaviorThunk = Box<dyn FnOnce() + Send>;
 struct Behavior {
     /// The body of the Behavior.
     thunk: BehaviorThunk,
-    /// Number of not-yet enqueued requests.
-    count: AtomicUsize,
+    /// Number of not-yet resolved dependencies (plus 1 to prevent premature scheduling).
+    unresolved_dependencies: AtomicUsize,
     /// The requests for this behavior.
     requests: Vec<Request>,
 }
@@ -176,19 +211,47 @@ impl Behavior {
     /// Performs two phase locking (2PL) over the enqueuing of the requests.
     /// This ensures that the overall effect of the enqueue is atomic.
     fn schedule(self) {
-        todo!()
+        let behavior_ptr = Box::into_raw(Box::new(self));
+        let requests = unsafe { &(*behavior_ptr).requests };
+
+        if requests.is_empty() {
+            unsafe { Self::resolve_dependency(behavior_ptr) };
+        } else {
+            for req in requests {
+                unsafe { req.start_enqueue(behavior_ptr) };
+            }
+            for req in requests {
+                unsafe { req.finish_enqueue() };
+            }
+
+            // We incremented unresolved_dependencies by 1 initially to prevent premature execution.
+            // Now that schedule is done, we decrement it by 1.
+            unsafe { Self::resolve_dependency(behavior_ptr) };
+        }
     }
 
-    /// Resolves a single outstanding request for `this`.
+    /// Resolves a single outstanding dependency for `this`.
     ///
     /// Called when a request for `this` is at the head of the queue for a particular cown. If it is
-    /// the last request, then the thunk is scheduled.
+    /// the last request (dependency), then the thunk is scheduled.
     ///
     /// # Safety
     ///
-    /// `this` must be a valid behavior.
-    unsafe fn resolve_one(this: *const Self) {
-        todo!()
+    /// `behavior_ptr` must be a valid behavior.
+    unsafe fn resolve_dependency(behavior_ptr: *const Self) {
+        let count_before_sub =
+            unsafe { (*behavior_ptr).unresolved_dependencies.fetch_sub(1, SeqCst) };
+        let is_last_dependency = count_before_sub == 1;
+
+        if is_last_dependency {
+            let behavior = unsafe { Box::from_raw(behavior_ptr as *mut Behavior) };
+            rayon::spawn(move || {
+                (behavior.thunk)();
+                for req in &behavior.requests {
+                    unsafe { req.release() };
+                }
+            });
+        }
     }
 }
 
@@ -196,7 +259,7 @@ impl fmt::Debug for Behavior {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Behavior")
             .field("thunk", &"BehaviorThunk")
-            .field("count", &self.count)
+            .field("unresolved_dependencies", &self.unresolved_dependencies)
             .field("requests", &self.requests)
             .finish()
     }
@@ -209,7 +272,21 @@ impl Behavior {
         C: CownPtrs + Send + 'static,
         F: for<'l> Fn(C::CownRefs<'l>) + Send + 'static,
     {
-        todo!()
+        let mut requests = cowns.requests();
+        requests.sort();
+        // Add 1 to unresolved_dependencies to prevent the behavior from being scheduled before
+        // `schedule()` completes.
+        let unresolved_dependencies = AtomicUsize::new(if requests.is_empty() {
+            1
+        } else {
+            requests.len() + 1
+        });
+        let thunk = Box::new(move || f(unsafe { cowns.get_mut() }));
+        Behavior {
+            thunk,
+            unresolved_dependencies,
+            requests,
+        }
     }
 }
 
