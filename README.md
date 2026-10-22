@@ -13,13 +13,14 @@ Based on the curriculum of [KAIST CS431 (Concurrent Programming)](https://github
 | **5** | Lock-Based Applications | Hand-over-hand lock coupling, fine-grained concurrent linked lists (`homework/src/list_set`) |
 | **6** | Behavior-Oriented Concurrency (API) | Cowns, asynchronous message passing, `when!` clause (`homework/src/boc.rs`) |
 | **7** | Lock-Free Concurrency (Concepts) | Atomic reference counting, CAS, clone-on-write; simplified `Arc<T>` (`homework/src/arc.rs`) |
-| **8** | Lock-Free Data Structures 1 | Treiber Stack & Michael-Scott Queue (`src/lockfree/{stack,queue}.rs`); Elimination Backoff Stack (`homework/src/elim_stack`) |
-| **9** | Lock-Free Data Structures 2 | Harris lock-free linked list & marked pointers (`src/lockfree/list.rs`); logical vs. physical deletion |
-| **10** | Lock-Free Data Structures 3 | Lock-free extensible hash table (Split-Ordered List), concurrent growable array (`homework/src/hash_table`) |
-| **11** | Concurrency Specification | Correctness criteria, Linearizability, identifying linearization points |
-| **12** | Safe Memory Reclamation (SMR) | Hazard Pointers (`homework/src/hazard_pointer`), Epoch-Based Reclamation (EBR), solving ABA problem |
-| **13** | Behavior-Oriented Concurrency (Engine) | Multi-core scheduler implementation for message-passing systems |
-| **14** | Final Synthesis | Full test suite execution and dynamic analysis with ThreadSanitizer & AddressSanitizer |
+| **8** | Lock-Free Data Structures | Treiber Stack & Michael-Scott Queue (`src/lockfree/{stack,queue}.rs`) |
+| **9** | Lock-Free Data Structures | Elimination Backoff Stack (`homework/src/elim_stack`)  |
+| **10** | Lock-Free Data Structures | Harris lock-free linked list & marked pointers (`src/lockfree/list.rs`); logical vs. physical deletion |
+| **11** | Lock-Free Data Structures | Lock-free extensible hash table (Split-Ordered List), concurrent growable array (`homework/src/hash_table`) |
+| **12** | Concurrency Specification | Correctness criteria, Linearizability, identifying linearization points |
+| **13** | Safe Memory Reclamation (SMR) | Hazard Pointers (`homework/src/hazard_pointer`), Epoch-Based Reclamation (EBR), solving ABA problem |
+| **14** | Behavior-Oriented Concurrency (Engine) | Multi-core scheduler implementation for message-passing systems |
+| **15** | Final Synthesis | Full test suite execution and dynamic analysis with ThreadSanitizer & AddressSanitizer |
 
 ## Build & Test
 

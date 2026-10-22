@@ -174,6 +174,7 @@ impl<T> Drop for Queue<T> {
 
 #[cfg(test)]
 mod test {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread::scope;
 
     use crossbeam_epoch::pin;
@@ -220,7 +221,26 @@ mod test {
     const CONC_COUNT: i64 = 1000000;
 
     #[test]
-    fn push_try_pop_1() {
+    fn try_pop_empty_returns_none() {
+        let q: Queue<i64> = Queue::new();
+        assert_eq!(q.try_pop(), None);
+    }
+
+    #[test]
+    fn is_empty_on_new_returns_true() {
+        let q: Queue<i64> = Queue::new();
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn push_makes_queue_non_empty() {
+        let q: Queue<i64> = Queue::new();
+        q.push(42);
+        assert!(!q.is_empty());
+    }
+
+    #[test]
+    fn single_push_try_pop_returns_element_and_becomes_empty() {
         let q: Queue<i64> = Queue::new();
         assert!(q.is_empty());
         q.push(37);
@@ -230,7 +250,7 @@ mod test {
     }
 
     #[test]
-    fn push_try_pop_2() {
+    fn two_pushes_try_pop_returns_fifo_order_and_becomes_empty() {
         let q: Queue<i64> = Queue::new();
         assert!(q.is_empty());
         q.push(37);
@@ -242,7 +262,61 @@ mod test {
     }
 
     #[test]
-    fn push_try_pop_many_seq() {
+    fn single_push_blocking_pop_returns_element_and_becomes_empty() {
+        let q: Queue<i64> = Queue::new();
+        assert!(q.is_empty());
+        q.push(37);
+        assert!(!q.is_empty());
+        assert_eq!(q.pop(), 37);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn two_pushes_blocking_pop_returns_elements_in_fifo_order() {
+        let q: Queue<i64> = Queue::new();
+        q.push(37);
+        q.push(48);
+        assert_eq!(q.pop(), 37);
+        assert_eq!(q.pop(), 48);
+    }
+
+    #[test]
+    fn push_multiple_makes_is_empty_false_and_allows_pop() {
+        let q: Queue<i64> = Queue::new();
+        q.push(20);
+        q.push(20);
+        assert!(!q.is_empty());
+        assert!(q.try_pop().is_some());
+    }
+
+    #[test]
+    fn fifo_order_preserved() {
+        let q: Queue<i64> = Queue::new();
+        for i in 0..100 {
+            q.push(i);
+        }
+        for i in 0..100 {
+            assert_eq!(q.try_pop(), Some(i));
+        }
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn interleaved_push_pop_preserves_fifo_order() {
+        let q: Queue<i64> = Queue::new();
+        q.push(1);
+        q.push(2);
+        assert_eq!(q.try_pop(), Some(1));
+
+        q.push(3);
+        assert_eq!(q.try_pop(), Some(2));
+        assert_eq!(q.try_pop(), Some(3));
+        assert_eq!(q.try_pop(), None);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn sequential_200_pushes_try_pop_all_in_fifo_order_and_becomes_empty() {
         let q: Queue<i64> = Queue::new();
         assert!(q.is_empty());
         for i in 0..200 {
@@ -256,26 +330,7 @@ mod test {
     }
 
     #[test]
-    fn push_pop_1() {
-        let q: Queue<i64> = Queue::new();
-        assert!(q.is_empty());
-        q.push(37);
-        assert!(!q.is_empty());
-        assert_eq!(q.pop(), 37);
-        assert!(q.is_empty());
-    }
-
-    #[test]
-    fn push_pop_2() {
-        let q: Queue<i64> = Queue::new();
-        q.push(37);
-        q.push(48);
-        assert_eq!(q.pop(), 37);
-        assert_eq!(q.pop(), 48);
-    }
-
-    #[test]
-    fn push_pop_many_seq() {
+    fn sequential_200_pushes_blocking_pop_all_in_fifo_order_and_becomes_empty() {
         let q: Queue<i64> = Queue::new();
         assert!(q.is_empty());
         for i in 0..200 {
@@ -289,7 +344,135 @@ mod test {
     }
 
     #[test]
-    fn push_try_pop_many_spsc() {
+    fn drop_empty_queue_does_not_crash_or_read_uninit() {
+        let q: Queue<String> = Queue::new();
+        drop(q);
+    }
+
+    #[test]
+    fn drop_with_remaining_elements_does_not_crash() {
+        let q: Queue<i64> = Queue::new();
+        for i in 0..100 {
+            q.push(i);
+        }
+    }
+
+    #[test]
+    fn drop_calls_destructor_for_all_remaining_elements() {
+        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        struct DropCounter;
+        impl Drop for DropCounter {
+            fn drop(&mut self) {
+                DROP_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        DROP_COUNT.store(0, Ordering::Relaxed);
+        {
+            let q = Queue::new();
+            for _ in 0..50 {
+                q.push(DropCounter);
+            }
+            for _ in 0..10 {
+                q.try_pop();
+            }
+        }
+        assert_eq!(DROP_COUNT.load(Ordering::Relaxed), 50);
+    }
+
+    #[test]
+    fn concurrent_push_then_pop_count_matches() {
+        let q = Queue::new();
+        let threads = 8;
+        let per_thread = 10_000;
+
+        scope(|scope| {
+            for t in 0..threads {
+                let q = &q;
+                scope.spawn(move || {
+                    for i in 0..per_thread {
+                        q.push(t * per_thread + i);
+                    }
+                });
+            }
+        });
+
+        let mut count = 0;
+        while q.try_pop().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, threads * per_thread);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn concurrent_push_sum_is_preserved() {
+        let q = Queue::new();
+        let threads = 8;
+        let per_thread: i64 = 10_000;
+
+        scope(|scope| {
+            for t in 0..threads {
+                let q = &q;
+                scope.spawn(move || {
+                    let start = t * per_thread;
+                    for i in start..start + per_thread {
+                        q.push(i);
+                    }
+                });
+            }
+        });
+
+        let total = threads * per_thread;
+        let expected_sum: i64 = (0..total).sum();
+        let mut actual_sum: i64 = 0;
+        while let Some(val) = q.try_pop() {
+            actual_sum += val;
+        }
+        assert_eq!(actual_sum, expected_sum);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn concurrent_mpmc_pop_count_equals_push_count() {
+        let q = Queue::new();
+        let producers = 4;
+        let consumers = 4;
+        let per_producer = 10_000;
+        let total = producers * per_producer;
+        let pop_count = AtomicUsize::new(0);
+
+        scope(|scope| {
+            for t in 0..producers {
+                let q = &q;
+                scope.spawn(move || {
+                    let start = t * per_producer;
+                    for i in start..start + per_producer {
+                        q.push(i);
+                    }
+                });
+            }
+
+            for _ in 0..consumers {
+                let q = &q;
+                let pop_count = &pop_count;
+                scope.spawn(move || {
+                    while pop_count.load(Ordering::Relaxed) < total {
+                        if q.try_pop().is_some() {
+                            pop_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+
+        assert_eq!(pop_count.load(Ordering::Relaxed), total);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn concurrent_spsc_try_pop_receives_all_elements_in_fifo_order() {
         let q: Queue<i64> = Queue::new();
         assert!(q.is_empty());
 
@@ -312,7 +495,7 @@ mod test {
     }
 
     #[test]
-    fn push_try_pop_many_spmc() {
+    fn concurrent_spmc_each_consumer_observes_monotonically_increasing_elements() {
         fn recv(q: &Queue<i64>) {
             let mut cur = -1;
             for _ in 0..CONC_COUNT {
@@ -343,7 +526,7 @@ mod test {
     }
 
     #[test]
-    fn push_try_pop_many_mpmc() {
+    fn concurrent_mpmc_consumers_observe_sorted_left_and_right_elements() {
         enum LR {
             Left(i64),
             Right(i64),
@@ -388,7 +571,7 @@ mod test {
     }
 
     #[test]
-    fn push_pop_many_spsc() {
+    fn concurrent_spsc_blocking_pop_matches_all_elements_and_empties() {
         let q: Queue<i64> = Queue::new();
 
         scope(|scope| {
@@ -406,13 +589,5 @@ mod test {
         });
         assert!(q.is_empty());
     }
-
-    #[test]
-    fn is_empty_dont_pop() {
-        let q: Queue<i64> = Queue::new();
-        q.push(20);
-        q.push(20);
-        assert!(!q.is_empty());
-        assert!(q.try_pop().is_some());
-    }
 }
+
