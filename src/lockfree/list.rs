@@ -396,3 +396,406 @@ where
         self.lookup(key, Cursor::find_harris_herlihy_shavit, guard)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::thread::scope;
+
+    use crossbeam_epoch::pin;
+
+    use super::*;
+
+    fn linked_keys<V>(list: &List<i32, V>, guard: &Guard) -> Vec<i32> {
+        let mut keys = Vec::new();
+        let mut curr = list.head.load(Acquire, guard);
+        while let Some(node) = unsafe { curr.as_ref() } {
+            keys.push(node.key);
+            curr = node.next.load(Acquire, guard);
+        }
+        keys
+    }
+
+    fn mark_without_unlinking<V>(list: &List<i32, V>, key: i32, guard: &Guard) {
+        let mut curr = list.head.load(Acquire, guard);
+        while let Some(node) = unsafe { curr.as_ref() } {
+            if node.key == key {
+                let _ = node.next.fetch_or(1, AcqRel, guard);
+                return;
+            }
+            curr = node.next.load(Acquire, guard);
+        }
+        panic!("key {key} not found");
+    }
+
+    fn list_of(keys: &[i32], guard: &Guard) -> List<i32, i32> {
+        let list = List::new();
+        for &k in keys {
+            assert!(list.harris_insert(k, k, guard));
+        }
+        list
+    }
+
+    #[test]
+    fn lookup_empty_returns_none() {
+        let list: List<i32, i32> = List::new();
+        let guard = &pin();
+        assert_eq!(list.harris_lookup(&10, guard), None);
+        assert_eq!(list.harris_michael_lookup(&10, guard), None);
+        assert_eq!(list.harris_herlihy_shavit_lookup(&10, guard), None);
+    }
+
+    #[test]
+    fn insert_single_element_returns_true_and_lookup_matches() {
+        let list: List<i32, &str> = List::new();
+        let guard = &pin();
+        assert!(list.harris_insert(10, "hello", guard));
+        assert_eq!(list.harris_lookup(&10, guard), Some(&"hello"));
+    }
+
+    #[test]
+    fn duplicate_insert_returns_false_and_preserves_original_value() {
+        let list: List<i32, &str> = List::new();
+        let guard = &pin();
+        assert!(list.harris_insert(10, "first", guard));
+        assert!(!list.harris_insert(10, "second", guard));
+        assert_eq!(list.harris_lookup(&10, guard), Some(&"first"));
+    }
+
+    #[test]
+    fn delete_nonexistent_key_returns_none() {
+        let list: List<i32, i32> = List::new();
+        let guard = &pin();
+        assert_eq!(list.harris_delete(&42, guard), None);
+    }
+
+    #[test]
+    fn delete_existing_key_returns_some_value_and_makes_subsequent_lookup_none() {
+        let list: List<i32, &str> = List::new();
+        let guard = &pin();
+        assert!(list.harris_insert(10, "val", guard));
+        assert_eq!(list.harris_delete(&10, guard), Some(&"val"));
+        assert_eq!(list.harris_lookup(&10, guard), None);
+    }
+
+    #[test]
+    fn multiple_unsorted_inserts_are_linked_in_sorted_order() {
+        let guard = &pin();
+        let list = list_of(&[50, 10, 40, 20, 30], guard);
+        assert_eq!(linked_keys(&list, guard), vec![10, 20, 30, 40, 50]);
+    }
+
+    #[test]
+    fn interleaved_insert_delete_matches_expected_elements() {
+        let list: List<i32, i32> = List::new();
+        let guard = &pin();
+
+        assert!(list.harris_insert(1, 100, guard));
+        assert!(list.harris_insert(3, 300, guard));
+        assert!(list.harris_insert(2, 200, guard));
+
+        assert_eq!(list.harris_delete(&2, guard), Some(&200));
+
+        assert!(list.harris_insert(4, 400, guard));
+        assert_eq!(list.harris_delete(&1, guard), Some(&100));
+
+        assert_eq!(list.harris_lookup(&1, guard), None);
+        assert_eq!(list.harris_lookup(&2, guard), None);
+        assert_eq!(list.harris_lookup(&3, guard), Some(&300));
+        assert_eq!(list.harris_lookup(&4, guard), Some(&400));
+    }
+
+    #[test]
+    fn harris_michael_insert_and_lookup_matches_inserted_value() {
+        let list: List<i32, &str> = List::new();
+        let guard = &pin();
+        assert!(list.harris_michael_insert(25, "michael", guard));
+        assert_eq!(list.harris_michael_lookup(&25, guard), Some(&"michael"));
+    }
+
+    #[test]
+    fn harris_michael_delete_returns_value_and_makes_lookup_none() {
+        let list: List<i32, &str> = List::new();
+        let guard = &pin();
+        assert!(list.harris_michael_insert(25, "michael", guard));
+        assert_eq!(list.harris_michael_delete(&25, guard), Some(&"michael"));
+        assert_eq!(list.harris_michael_lookup(&25, guard), None);
+    }
+
+    #[test]
+    fn harris_herlihy_shavit_lookup_finds_present_key_and_returns_none_for_missing() {
+        let guard = &pin();
+        let list = list_of(&[10, 20], guard);
+        assert_eq!(list.harris_herlihy_shavit_lookup(&10, guard), Some(&10));
+        assert_eq!(list.harris_herlihy_shavit_lookup(&20, guard), Some(&20));
+        assert_eq!(list.harris_herlihy_shavit_lookup(&30, guard), None);
+    }
+
+    #[test]
+    fn all_three_find_strategies_agree_on_present_and_absent_keys() {
+        let list: List<i32, i32> = List::new();
+        let guard = &pin();
+        for i in (0..20).step_by(2) {
+            assert!(list.harris_insert(i, i * 10, guard));
+        }
+
+        for i in 0..20 {
+            let h = list.harris_lookup(&i, guard);
+            let hm = list.harris_michael_lookup(&i, guard);
+            let hhs = list.harris_herlihy_shavit_lookup(&i, guard);
+            assert_eq!(h, hm);
+            assert_eq!(hm, hhs);
+        }
+    }
+
+    #[test]
+    fn lookup_returns_none_for_marked_but_still_linked_node() {
+        let guard = &pin();
+
+        let list = list_of(&[10, 20, 30], guard);
+        mark_without_unlinking(&list, 20, guard);
+        assert_eq!(list.harris_herlihy_shavit_lookup(&20, guard), None);
+
+        let list = list_of(&[10, 20, 30], guard);
+        mark_without_unlinking(&list, 20, guard);
+        assert_eq!(list.harris_michael_lookup(&20, guard), None);
+
+        let list = list_of(&[10, 20, 30], guard);
+        mark_without_unlinking(&list, 20, guard);
+        assert_eq!(list.harris_lookup(&20, guard), None);
+    }
+
+    #[test]
+    fn harris_lookup_unlinks_chain_of_marked_nodes() {
+        let guard = &pin();
+        let list = list_of(&[10, 20, 30, 40, 50], guard);
+        mark_without_unlinking(&list, 20, guard);
+        mark_without_unlinking(&list, 30, guard);
+        mark_without_unlinking(&list, 40, guard);
+        assert_eq!(linked_keys(&list, guard), vec![10, 20, 30, 40, 50]);
+
+        assert_eq!(list.harris_lookup(&50, guard), Some(&50));
+
+        assert_eq!(linked_keys(&list, guard), vec![10, 50]);
+    }
+
+    #[test]
+    fn harris_michael_lookup_unlinks_chain_of_marked_nodes() {
+        let guard = &pin();
+        let list = list_of(&[10, 20, 30, 40, 50], guard);
+        mark_without_unlinking(&list, 20, guard);
+        mark_without_unlinking(&list, 30, guard);
+        mark_without_unlinking(&list, 40, guard);
+        assert_eq!(linked_keys(&list, guard), vec![10, 20, 30, 40, 50]);
+
+        assert_eq!(list.harris_michael_lookup(&50, guard), Some(&50));
+
+        assert_eq!(linked_keys(&list, guard), vec![10, 50]);
+    }
+
+    #[test]
+    fn harris_herlihy_shavit_lookup_leaves_marked_nodes_linked() {
+        let guard = &pin();
+        let list = list_of(&[10, 20, 30, 40, 50], guard);
+        mark_without_unlinking(&list, 20, guard);
+        mark_without_unlinking(&list, 30, guard);
+
+        assert_eq!(list.harris_herlihy_shavit_lookup(&50, guard), Some(&50));
+
+        assert_eq!(linked_keys(&list, guard), vec![10, 20, 30, 40, 50]);
+    }
+
+    #[test]
+    fn drop_with_remaining_elements_does_not_crash() {
+        let guard = &pin();
+        let list: List<i32, i32> = List::new();
+        for i in 0..100 {
+            list.harris_insert(i, i, guard);
+        }
+    }
+
+    #[test]
+    fn drop_calls_destructor_for_all_remaining_values() {
+        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        struct DropCounter;
+        impl Drop for DropCounter {
+            fn drop(&mut self) {
+                DROP_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        DROP_COUNT.store(0, Ordering::Relaxed);
+        {
+            let guard = &pin();
+            let list = List::new();
+            for i in 0..50 {
+                assert!(list.harris_insert(i, DropCounter, guard));
+            }
+        }
+        assert_eq!(DROP_COUNT.load(Ordering::Relaxed), 50);
+    }
+
+    #[test]
+    fn concurrent_disjoint_inserts_all_succeed_and_total_count_matches() {
+        let list: List<i32, i32> = List::new();
+        let threads = 8;
+        let per_thread = 500;
+
+        scope(|scope| {
+            for t in 0..threads {
+                let list = &list;
+                scope.spawn(move || {
+                    let guard = &pin();
+                    for i in 0..per_thread {
+                        let key = t * per_thread + i;
+                        assert!(list.harris_insert(key, key, guard));
+                    }
+                });
+            }
+        });
+
+        let guard = &pin();
+        let total = threads * per_thread;
+        let found = (0..total)
+            .filter(|i| list.harris_lookup(i, guard).is_some())
+            .count();
+        assert_eq!(found, total as usize);
+    }
+
+    #[test]
+    fn concurrent_identical_inserts_only_one_succeeds_per_key() {
+        let list: List<i32, i32> = List::new();
+        let threads = 8;
+        let num_keys = 200;
+        let success_count = AtomicUsize::new(0);
+
+        scope(|scope| {
+            for _ in 0..threads {
+                let list = &list;
+                let success_count = &success_count;
+                scope.spawn(move || {
+                    let guard = &pin();
+                    for key in 0..num_keys {
+                        if list.harris_insert(key, key * 10, guard) {
+                            success_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+
+        assert_eq!(success_count.load(Ordering::Relaxed), num_keys as usize);
+
+        let guard = &pin();
+        for key in 0..num_keys {
+            assert_eq!(list.harris_lookup(&key, guard), Some(&(key * 10)));
+        }
+    }
+
+    #[test]
+    fn concurrent_delete_of_same_key_succeeds_exactly_once() {
+        let threads = 8;
+        let num_keys = 200;
+        let guard = &pin();
+        let list = list_of(&(0..num_keys).collect::<Vec<_>>(), guard);
+        let success_count = AtomicUsize::new(0);
+
+        scope(|scope| {
+            for _ in 0..threads {
+                let list = &list;
+                let success_count = &success_count;
+                scope.spawn(move || {
+                    let guard = &pin();
+                    for key in 0..num_keys {
+                        if list.harris_delete(&key, guard).is_some() {
+                            success_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+
+        assert_eq!(success_count.load(Ordering::Relaxed), num_keys as usize);
+        assert_eq!(linked_keys(&list, guard), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn concurrent_delete_evens_while_readers_always_find_odds() {
+        let total = 2000;
+        let deleters = 2;
+        let readers = 4;
+        let guard = &pin();
+        let list = list_of(&(0..total).collect::<Vec<_>>(), guard);
+        let finished_deleters = AtomicUsize::new(0);
+        let deleting_done = AtomicBool::new(false);
+
+        scope(|scope| {
+            for d in 0..deleters {
+                let list = &list;
+                let finished_deleters = &finished_deleters;
+                let deleting_done = &deleting_done;
+                scope.spawn(move || {
+                    let guard = &pin();
+                    for key in (0..total).filter(|k| k % 2 == 0 && (k / 2) % deleters == d) {
+                        assert_eq!(list.harris_delete(&key, guard), Some(&key));
+                    }
+                    if finished_deleters.fetch_add(1, Ordering::AcqRel) + 1 == deleters as usize {
+                        deleting_done.store(true, Ordering::Release);
+                    }
+                });
+            }
+
+            for r in 0..readers {
+                let list = &list;
+                let deleting_done = &deleting_done;
+                scope.spawn(move || {
+                    let guard = &pin();
+                    loop {
+                        let done = deleting_done.load(Ordering::Acquire);
+                        for key in (1..total).step_by(2) {
+                            let found = match r % 3 {
+                                0 => list.harris_lookup(&key, guard),
+                                1 => list.harris_michael_lookup(&key, guard),
+                                _ => list.harris_herlihy_shavit_lookup(&key, guard),
+                            };
+                            assert_eq!(found, Some(&key));
+                        }
+                        if done {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+
+        let expected: Vec<i32> = (1..total).step_by(2).collect();
+        assert_eq!(linked_keys(&list, guard), expected);
+    }
+
+    #[test]
+    fn concurrent_harris_michael_insert_then_delete_own_keys_leaves_list_empty() {
+        let list: List<i32, i32> = List::new();
+        let threads = 8;
+        let per_thread = 500;
+
+        scope(|scope| {
+            for t in 0..threads {
+                let list = &list;
+                scope.spawn(move || {
+                    let guard = &pin();
+                    let keys = t * per_thread..(t + 1) * per_thread;
+                    for key in keys.clone() {
+                        assert!(list.harris_michael_insert(key, key, guard));
+                    }
+                    for key in keys {
+                        assert_eq!(list.harris_michael_delete(&key, guard), Some(&key));
+                    }
+                });
+            }
+        });
+
+        let guard = &pin();
+        assert_eq!(linked_keys(&list, guard), Vec::<i32>::new());
+    }
+}
